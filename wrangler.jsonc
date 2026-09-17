@@ -3,5 +3,7 @@
   "name": "floorwatch",
   "main": "vinext/server/fetch-handler",
   "compatibility_date": "2026-05-15",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "d1_databases": [{"binding":"DB","database_name":"floorwatch-db","database_id":"173c65ca-da27-4e25-8095-45fcab20dfeb"}]
 }

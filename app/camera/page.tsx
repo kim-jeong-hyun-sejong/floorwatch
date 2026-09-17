@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, Camera, CircleStop, ExternalLink } from "lucide-react";
 import type { ObjectDetector } from "@mediapipe/tasks-vision";
+import { FLOORS } from "../signal";
+import NameReader from "./name-reader";
 
 const valid = (key: string | null) => !!key && /^[a-f0-9]{32}$/.test(key);
 
@@ -19,6 +21,7 @@ export default function CameraPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const busyRef = useRef(false);
   const runRef = useRef(false);
+  const namesRef = useRef<{names:string[];time:number}>({names:[],time:0});
 
   useEffect(() => {
     const query = new URLSearchParams(location.search).get("room");
@@ -37,6 +40,7 @@ export default function CameraPage() {
   }, []);
 
   function stop() {
+    namesRef.current = {names:[],time:0};
     runRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
@@ -57,7 +61,7 @@ export default function CameraPage() {
     setMessage("웹캠과 사람 감지 모델을 준비 중입니다. 처음에는 몇 초 걸릴 수 있습니다.");
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw Error("이 브라우저에서 웹캠을 사용할 수 없습니다. HTTPS 주소와 카메라 권한을 확인하세요.");
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 } }, audio: false });
       streamRef.current = stream;
       if (!videoRef.current) throw Error("영상 화면을 준비하지 못했습니다.");
       videoRef.current.srcObject = stream;
@@ -94,7 +98,7 @@ export default function CameraPage() {
           setCount(people);
           const response = await fetch("/api/floors", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ room, floor, count: people }),
+            body: JSON.stringify({ room, floor, count: people, names: people === 1 && Date.now()-namesRef.current.time < 4000 ? namesRef.current.names : [] }),
           });
           if (!response.ok) throw Error("서버에 결과를 보내지 못했습니다. 사이트 접근 권한을 확인하세요.");
           setMessage(`${floor}층 카메라 실행 중 · 마지막 신호 전송 완료`);
@@ -114,7 +118,8 @@ export default function CameraPage() {
     <header className="top"><div className="logo"><Activity size={25}/><div><b>FLOOR<span>WATCH</span></b><small>웹캠 사람 감지 · 송신 화면</small></div></div><a className="camera-top-link" href={room ? "/?room=" + room : "/"} target="_blank" rel="noopener noreferrer">현황 화면 열기 <ExternalLink size={16}/></a></header>
     <section className="camera-main"><p className="overline">CAMERA INPUT / A동</p><h1>이 컴퓨터의 웹캠 연결</h1><p>각 컴퓨터에서 같은 현황 링크를 열고, 담당 층만 다르게 선택하세요. 원본 영상은 이 브라우저에서만 처리합니다.</p>
       <div className="camera-grid"><div className="preview-card"><div className="preview-heading"><Camera size={18}/> 웹캠 미리보기 <span>{phase === "running" ? "● 실행 중" : phase === "loading" ? "준비 중" : "대기 중"}</span></div><div className="video-frame"><video ref={videoRef} muted playsInline autoPlay/><canvas ref={canvasRef}/>{phase === "idle" && <div className="camera-placeholder"><Camera size={46}/><span>연결 후 이곳에 웹캠 영상이 표시됩니다.</span></div>}</div><div className="camera-status" role="status">{message}</div></div>
-      <aside className="camera-control"><label htmlFor="camera-floor">이 컴퓨터가 맡을 층</label><select id="camera-floor" disabled={phase !== "idle"} value={floor} onChange={e => setFloor(Number(e.target.value))}><option value={1}>1층 · CAM-01</option><option value={2}>2층 · CAM-02</option><option value={3}>3층 · CAM-03</option></select><button className="camera-start" disabled={phase !== "idle" || !room} onClick={() => void start()}>{phase === "loading" ? "모델 불러오는 중…" : "웹캠 연결 및 사람 감지 시작"}</button><button className="camera-stop" disabled={phase !== "running"} onClick={stop}><CircleStop size={17}/> 중지</button><div className="camera-result"><span>현재 영상 속 사람 검출</span><strong>{count === null ? "—" : count}<small>명</small></strong></div><p className="camera-note">검출 대상은 ‘사람’이며 작업자 여부는 구분하지 않습니다. 이 탭을 닫으면 웹캠 감지도 멈춥니다. 12초간 신호가 없으면 현황 화면에서 ‘연결 없음’이 됩니다.</p></aside></div>
+      <aside className="camera-control"><label htmlFor="camera-floor">이 컴퓨터가 맡을 층</label><select id="camera-floor" disabled={phase !== "idle"} value={floor} onChange={e => setFloor(Number(e.target.value))}>{[...FLOORS].reverse().map(f=><option key={f} value={f}>{f}층 · CAM-{String(f).padStart(2,"0")}</option>)}</select><button className="camera-start" disabled={phase !== "idle" || !room} onClick={() => void start()}>{phase === "loading" ? "모델 불러오는 중…" : "웹캠 연결 및 사람 감지 시작"}</button><button className="camera-stop" disabled={phase !== "running"} onClick={stop}><CircleStop size={17}/> 중지</button><div className="camera-result"><span>현재 영상 속 사람 검출</span><strong>{count === null ? "—" : count}<small>명</small></strong></div><p className="camera-note">검출 대상은 ‘사람’이며 작업자 여부는 구분하지 않습니다. 이 탭을 닫으면 웹캠 감지도 멈춥니다. 12초간 신호가 없으면 현황 화면에서 ‘연결 없음’이 됩니다.</p></aside></div>
+      <NameReader video={videoRef} count={count} onNames={names=>{namesRef.current={names,time:Date.now()};}}/>
     </section>
   </main>;
 }

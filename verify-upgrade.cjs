@@ -1,0 +1,34 @@
+const fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),assert=require('node:assert/strict');
+const {DatabaseSync}=require('node:sqlite');
+const db=new DatabaseSync(':memory:');
+const DB={prepare(sql){return{bind(...args){return{async all(){return{results:db.prepare(sql).all(...args)}},async run(){return db.prepare(sql).run(...args)}}},async run(){return db.prepare(sql).run()}}}};
+function load(path,extra={}){const exports={};const code=ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>n in extra?extra[n]:require(n),Response,Request,URL,TextEncoder,Date,console,crypto:globalThis.crypto});return exports;}
+(async()=>{
+const signal=load('app/signal.ts'),api=load('app/api/floors/route.ts',{'cloudflare:workers':{env:{DB}},'../../signal':signal});
+const room='a'.repeat(32);
+const get=()=>api.GET(new Request('https://example.test/api/floors?room='+room));
+const post=d=>api.POST(new Request('https://example.test/api/floors',{method:'POST',body:JSON.stringify(d)}));
+let result=await (await get()).json();assert.equal(result.floors.length,30);assert.equal(result.floors[0].floor,30);
+assert.equal((await post({room,floor:30,count:1,names:['홍길동']})).status,200);
+result=await(await get()).json();assert.deepEqual(result.floors[0].names,['홍길동']);assert.equal(result.floors[0].count,1);
+for(const floor of [0,31,1.5])assert.equal((await post({room,floor,count:1})).status,400);
+assert.equal((await post({room,floor:1,count:-1})).status,400);
+assert.equal((await post({room:'invalid',floor:1,count:1})).status,400);
+await post({room,floor:1,count:0,names:['홍길동']});result=await(await get()).json();assert.equal(result.floors[29].names.length,0);
+db.prepare('UPDATE floor_signals_v2 SET updated_at=?').run(Date.now()-13000);
+result=await(await get()).json();assert.equal(result.floors[0].state,'offline');assert.equal(result.floors[0].names.length,0);
+assert.equal((await api.GET(new Request('https://example.test/api/floors?room='+'b'.repeat(32))).then(r=>r.json())).floors[0].count,0);
+const React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
+const Home=load('app/page.tsx',{'./signal':signal}).default;
+const html=renderToStaticMarkup(React.createElement(Home));assert.equal((html.match(/class="tower-floor /g)||[]).length,30);
+console.log('PASS: API validation, 30 floors, names, stale expiry, room isolation, 30-row SSR.');
+if(process.env.SKIP_VISUAL==='1')return;
+const {chromium}=require('playwright');const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const page=await browser.newPage({viewport:{width:1440,height:1000}});
+await page.setContent('<meta charset="utf-8"><style>'+fs.readFileSync('app/globals.css','utf8')+fs.readFileSync('app/upgrade.css','utf8')+'</style>'+html);
+await page.screenshot({path:'/workspace/scratch/4a2d03ca30d4/floorwatch-desktop.png',fullPage:true});
+await page.setViewportSize({width:390,height:844});
+await page.screenshot({path:'/workspace/scratch/4a2d03ca30d4/floorwatch-mobile.png',fullPage:true});
+assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+await browser.close();console.log('PASS: 30-floor API, names, validation, stale expiry, room isolation, SSR and mobile overflow.');
+})().catch(e=>{console.error(e);process.exit(1)});
