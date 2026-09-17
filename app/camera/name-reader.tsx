@@ -1,52 +1,106 @@
 "use client";
 import {useEffect,useRef,useState,type RefObject} from 'react';
-import {normalizeNames} from '../signal';
+
 type Worker={recognize:(image:HTMLCanvasElement)=>Promise<{data:{text:string;confidence:number}}>;terminate:()=>Promise<unknown>};
 type Engine={createWorker:(lang:string)=>Promise<Worker>};
+
+function threeHangulCandidates(text:string):string[]{
+ const normalized=text.normalize('NFC');
+ const candidates:string[]=[];
+
+ // 공백이나 문장부호로 구분된 정확히 세 글자의 한글 낱말을 찾습니다.
+ for(const token of normalized.match(/[가-힣]+/g)??[]){
+  if(token.length===3)candidates.push(token);
+ }
+
+ // OCR가 "홍 길 동"처럼 글자 사이를 띄운 경우, 한 줄 전체가 세 글자이면 복원합니다.
+ for(const line of normalized.split(/\r?\n/)){
+  const hangulOnly=line.replace(/[^가-힣]/g,'');
+  if(hangulOnly.length===3)candidates.push(hangulOnly);
+ }
+
+ return [...new Set(candidates)].slice(0,20);
+}
+
 export default function NameReader({video,count,onNames}:{video:RefObject<HTMLVideoElement|null>;count:number|null;onNames:(names:string[])=>void}){
- const [enabled,setEnabled]=useState(false),[roster,setRoster]=useState(''),[top,setTop]=useState(20),[status,setStatus]=useState('꺼짐 · 동의받은 가명으로 시험하세요.');
+ const [enabled,setEnabled]=useState(false),[status,setStatus]=useState('꺼짐 · 전체 화면에서 한글 세 글자 후보를 찾습니다.');
  const callback=useRef(onNames),people=useRef(count);callback.current=onNames;people.current=count;
  const preview=useRef<HTMLCanvasElement>(null);
+
  useEffect(()=>{
- if(!enabled){callback.current([]);return;}
- let stopped=false,worker:Worker|null=null,timer:ReturnType<typeof setTimeout>|null=null,previous='';
- const allowed=normalizeNames(roster.split(/[,\s]+/));
- async function run(){
- try{
- let engine=(window as Window & {Tesseract?:Engine}).Tesseract;
- if(!engine){await new Promise<void>((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';script.onload=()=>resolve();script.onerror=()=>{script.remove();reject(Error('OCR 다운로드 실패'));};document.head.appendChild(script);});engine=(window as Window & {Tesseract?:Engine}).Tesseract;}
- if(stopped)return;
- if(!engine)throw Error('OCR 준비 실패');
- setStatus('한국어 OCR 모델 준비 중…');
- worker=await engine.createWorker('kor');
- if(stopped){await worker.terminate();return;}
- async function tick(){
- if(stopped||!worker)return;
- callback.current([]);
- const v=video.current,canvas=preview.current;
- if(people.current!==1||!v||v.readyState<2||!canvas){previous='';setStatus('OCR 시연은 한 명만 화면에 들어오세요.');}
- else{
- const w=v.videoWidth,h=v.videoHeight;
- canvas.width=900;canvas.height=180;
- const ctx=canvas.getContext('2d')!;
- ctx.drawImage(v,w*.2,h*top/100,w*.6,h*.12,0,0,900,180);
- const result=await worker.recognize(canvas);
- if(stopped)return;
- const compact=result.data.text.normalize('NFC').replace(/\s/g,'');
- const match=allowed.filter(n=>compact===n);
- if(result.data.confidence>=70&&match.length===1&&people.current===1){
- const name=match[0];
- if(previous===name){callback.current([name]);setStatus('반복 판독 일치: '+name+' · 신원 확인 아님');}else setStatus('이름 후보 재확인 중…');
- previous=name;
- }else{previous='';setStatus('판독 불확실 · 이름표를 중앙 영역에 크게 맞추세요.');}
- }
- if(!stopped)timer=setTimeout(()=>void tick().catch(()=>{callback.current([]);setStatus('OCR 오류 · 껐다 켜서 다시 시도하세요.');}),2500);
- }
- void tick().catch(()=>{callback.current([]);setStatus('OCR 실행 실패 · 사람 수 감지는 계속됩니다.');});
- }catch{if(!stopped)setStatus('OCR 모델 준비 실패 · 인터넷 연결을 확인하세요.');}
- }
- void run();
- return()=>{stopped=true;if(timer)clearTimeout(timer);void worker?.terminate();callback.current([]);};
- },[enabled,roster,top,video]);
- return <section className="ocr-panel"><h3>한글 이름표 OCR · 실험</h3><p>안전모 착용 여부는 자동 판정하지 않습니다. 한 명의 큰 이름표를 읽는 제한된 시연 기능입니다.</p><label>허용할 가명 목록 (쉼표 구분)<input value={roster} disabled={enabled} onChange={e=>setRoster(e.target.value)} placeholder="홍길동, 김가람"/></label><label>판독 영역 높이: {top}%<input type="range" min="0" max="85" value={top} disabled={enabled} onChange={e=>setTop(Number(e.target.value))}/></label><p>영상 가로 20~80%, 위에서 {top}~{top+12}% 영역을 읽습니다. 아래 잘린 영상에 이름표 전체가 보이도록 위치를 맞추세요.</p><label><input type="checkbox" checked={enabled} disabled={!enabled&&normalizeNames(roster.split(/[,\s]+/)).length===0} onChange={e=>setEnabled(e.target.checked)}/> 동의받은 가명 사용 · OCR 켜기</label><canvas ref={preview} className="ocr-preview"/><p role="status">{status}</p><small>모델은 외부 CDN에서 내려받고 영상 판독은 브라우저에서 처리합니다. 판독된 가명은 현황 링크 보유자에게 공개되며 서버에 마지막 결과로 저장됩니다.</small></section>;
+  if(!enabled){callback.current([]);setStatus('꺼짐 · 전체 화면에서 한글 세 글자 후보를 찾습니다.');return;}
+  let stopped=false,worker:Worker|null=null,timer:ReturnType<typeof setTimeout>|null=null,previous='';
+
+  async function run(){
+   try{
+    let engine=(window as Window & {Tesseract?:Engine}).Tesseract;
+    if(!engine){
+     await new Promise<void>((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+      script.onload=()=>resolve();
+      script.onerror=()=>{script.remove();reject(Error('OCR 다운로드 실패'));};
+      document.head.appendChild(script);
+     });
+     engine=(window as Window & {Tesseract?:Engine}).Tesseract;
+    }
+    if(stopped)return;
+    if(!engine)throw Error('OCR 준비 실패');
+    setStatus('한국어 OCR 모델 준비 중…');
+    worker=await engine.createWorker('kor');
+    if(stopped){await worker.terminate();return;}
+
+    async function tick(){
+     if(stopped||!worker)return;
+     const v=video.current,canvas=preview.current;
+     if(!people.current||people.current<1||!v||v.readyState<2||!canvas){
+      previous='';callback.current([]);
+      setStatus('사람이 감지되면 전체 화면 OCR을 시작합니다.');
+     }else{
+      const w=v.videoWidth,h=v.videoHeight;
+      const targetWidth=Math.min(1280,w);
+      const targetHeight=Math.max(1,Math.round(h*(targetWidth/w)));
+      canvas.width=targetWidth;canvas.height=targetHeight;
+      const ctx=canvas.getContext('2d')!;
+      ctx.drawImage(v,0,0,w,h,0,0,targetWidth,targetHeight);
+      setStatus('전체 화면의 한글을 판독 중…');
+      const result=await worker.recognize(canvas);
+      if(stopped)return;
+      const candidates=result.data.confidence>=45?threeHangulCandidates(result.data.text):[];
+      const key=candidates.slice().sort().join('|');
+      if(candidates.length>0){
+       if(previous===key){
+        callback.current(candidates);
+        setStatus('반복 판독된 한글 세 글자 후보: '+candidates.join(', ')+' · 이름 확정 아님');
+       }else{
+        setStatus('세 글자 후보 재확인 중: '+candidates.join(', '));
+       }
+       previous=key;
+      }else{
+       previous='';callback.current([]);
+       setStatus('한글 세 글자 후보 없음 · 글자를 더 크게, 밝고 수평으로 보여주세요.');
+      }
+     }
+     if(!stopped)timer=setTimeout(()=>void tick().catch(()=>{
+      callback.current([]);setStatus('OCR 오류 · 껐다 켜서 다시 시도하세요.');
+     }),3000);
+    }
+    void tick().catch(()=>{callback.current([]);setStatus('OCR 실행 실패 · 사람 수 감지는 계속됩니다.');});
+   }catch{
+    if(!stopped)setStatus('OCR 모델 준비 실패 · 인터넷 연결을 확인하세요.');
+   }
+  }
+
+  void run();
+  return()=>{stopped=true;if(timer)clearTimeout(timer);void worker?.terminate();callback.current([]);};
+ },[enabled,video]);
+
+ return <section className="ocr-panel">
+  <h3>전체 화면 한글 OCR · 실험</h3>
+  <p>웹캠 전체 화면의 텍스트를 읽고 한글 세 글자 문자열을 자동 추출합니다. 세 글자라는 조건만으로 실제 사람 이름임을 확인할 수는 없습니다.</p>
+  <label><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/> 전체 화면 OCR 켜기</label>
+  <canvas ref={preview} className="ocr-preview"/>
+  <p role="status">{status}</p>
+  <small>원본 영상과 OCR 이미지는 서버로 전송하지 않습니다. 반복 판독된 세 글자 후보만 현황 화면에 전송됩니다. 작은 글씨·곡면·기울어진 글씨는 인식되지 않을 수 있습니다.</small>
+ </section>;
 }
